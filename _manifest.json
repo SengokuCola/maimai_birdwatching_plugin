@@ -1,0 +1,37 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "麦麦观鸟插件 (MaiMai Birdwatching Plugin)",
+  "description": "提供基于百度智能云动物识别接口的观鸟与动物识别工具。",
+  "author": {
+    "name": "OpenAI Codex",
+    "url": "https://openai.com"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://openai.com",
+    "homepage": "https://openai.com",
+    "documentation": "https://cloud.baidu.com/doc/IMAGERECOGNITION/s/Zk3bcxdfr",
+    "issues": "https://openai.com"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.0.0"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "message.get_by_id"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "locales_path": "_locales",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "openai.maimai-birdwatching-plugin"
+}
