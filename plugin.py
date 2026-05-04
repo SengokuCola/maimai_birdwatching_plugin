@@ -18,6 +18,8 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 
 BAIDU_ANIMAL_ENDPOINT = "https://aip.baidubce.com/rest/2.0/image-classify/v1/animal"
+BAIDU_DISH_ENDPOINT = "https://aip.baidubce.com/rest/2.0/image-classify/v2/dish"
+BAIDU_PLANT_ENDPOINT = "https://aip.baidubce.com/rest/2.0/image-classify/v1/plant"
 BAIDU_TOKEN_ENDPOINT = "https://aip.baidubce.com/oauth/2.0/token"
 MAX_DOWNLOAD_IMAGE_BYTES = 4 * 1024 * 1024
 TOKEN_EXPIRE_SAFETY_SECONDS = 300
@@ -329,7 +331,21 @@ class BaiduImageRecognitionConfig(PluginConfigBase):
     secret_key: str = Field(default="", description="百度智能云应用的 Secret Key")
     top_num: int = Field(default=6, ge=1, le=10, description="返回预测得分 Top 结果数")
     baike_num: int = Field(default=1, ge=0, le=5, description="返回百科信息条数，0 表示不请求百科")
+    dish_filter_threshold: float = Field(default=0.95, ge=0.0, le=1.0, description="菜品识别过滤阈值，越高越严格")
     timeout_seconds: float = Field(default=15.0, ge=3.0, le=60.0, description="百度接口请求超时时间")
+
+
+class ToolSwitchConfig(PluginConfigBase):
+    """工具启用开关。"""
+
+    __ui_label__ = "工具开关"
+    __ui_icon__ = "toggle-left"
+    __ui_order__ = 2
+
+    recognize_bird: bool = Field(default=True, description="是否启用鸟类识别工具")
+    recognize_animal: bool = Field(default=True, description="是否启用动物识别工具")
+    recognize_plant: bool = Field(default=True, description="是否启用植物识别工具")
+    recognize_dish: bool = Field(default=False, description="是否启用菜品识别工具")
 
 
 class BirdwatchingPluginConfig(PluginConfigBase):
@@ -337,6 +353,7 @@ class BirdwatchingPluginConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     baidu: BaiduImageRecognitionConfig = Field(default_factory=BaiduImageRecognitionConfig)
+    tools: ToolSwitchConfig = Field(default_factory=ToolSwitchConfig)
 
 
 class BirdwatchingPlugin(MaiBotPlugin):
@@ -483,43 +500,54 @@ class BirdwatchingPlugin(MaiBotPlugin):
         self._access_token_expires_at = now + max(60, expires_in - TOKEN_EXPIRE_SAFETY_SECONDS)
         return token
 
-    async def _recognize_animal_image(self, image_base64: str) -> Dict[str, Any]:
-        """调用百度动物识别接口。"""
+    async def _recognize_baidu_image(
+        self,
+        image_base64: str,
+        endpoint: str,
+        service_name: str,
+        *,
+        include_top_num: bool = False,
+        include_dish_filter_threshold: bool = False,
+    ) -> Dict[str, Any]:
+        """调用百度图像识别接口。"""
 
         if len(image_base64.encode("utf-8")) > MAX_DOWNLOAD_IMAGE_BYTES:
-            raise RuntimeError("图片 Base64 编码后超过 4MB，无法提交给百度动物识别接口。")
+            raise RuntimeError(f"图片 Base64 编码后超过 4MB，无法提交给百度{service_name}接口。")
 
         access_token = await self._get_access_token()
         timeout = aiohttp.ClientTimeout(total=self.config.baidu.timeout_seconds)
         params = {"access_token": access_token}
         data: Dict[str, Any] = {
             "image": image_base64,
-            "top_num": self.config.baidu.top_num,
         }
+        if include_top_num:
+            data["top_num"] = self.config.baidu.top_num
+        if include_dish_filter_threshold:
+            data["filter_threshold"] = self.config.baidu.dish_filter_threshold
         if self.config.baidu.baike_num > 0:
             data["baike_num"] = self.config.baidu.baike_num
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                BAIDU_ANIMAL_ENDPOINT,
+                endpoint,
                 params=params,
                 data=data,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             ) as response:
                 payload = await response.json(content_type=None)
                 if response.status >= 400:
-                    raise RuntimeError(f"百度动物识别请求失败：HTTP {response.status} {payload}")
+                    raise RuntimeError(f"百度{service_name}请求失败：HTTP {response.status} {payload}")
 
         if not isinstance(payload, dict):
-            raise RuntimeError("百度动物识别返回格式异常。")
+            raise RuntimeError(f"百度{service_name}返回格式异常。")
         if payload.get("error_code") is not None:
             error_msg = payload.get("error_msg") or payload.get("error_description") or "未知错误"
-            raise RuntimeError(f"百度动物识别失败：{payload.get('error_code')} {error_msg}")
+            raise RuntimeError(f"百度{service_name}失败：{payload.get('error_code')} {error_msg}")
         return payload
 
     @staticmethod
     def _serialize_results(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """规范化百度动物识别结果。"""
+        """规范化百度图像识别结果。"""
 
         raw_results = payload.get("result")
         if not isinstance(raw_results, list):
@@ -534,7 +562,8 @@ class BirdwatchingPlugin(MaiBotPlugin):
                 baike_info = {}
             result = {
                 "name": str(item.get("name") or "").strip(),
-                "score": item.get("score"),
+                "score": item.get("score", item.get("probability")),
+                "calorie": item.get("calorie"),
                 "baike_url": str(baike_info.get("baike_url") or "").strip(),
                 "description": str(baike_info.get("description") or "").strip(),
             }
@@ -554,6 +583,9 @@ class BirdwatchingPlugin(MaiBotPlugin):
             score_text = _score_to_text(item.get("score"))
             suffix = f"（置信度 {score_text}）" if score_text else ""
             lines.append(f"{index}. {item['name']}{suffix}")
+            calorie = str(item.get("calorie") or "").strip()
+            if calorie:
+                lines.append(f"   热量：{calorie}")
             description = str(item.get("description") or "").strip()
             if description:
                 lines.append(f"   简介：{description}")
@@ -562,8 +594,17 @@ class BirdwatchingPlugin(MaiBotPlugin):
                 lines.append(f"   百科：{baike_url}")
         return "\n".join(lines)
 
-    async def _recognize_message_image(self, msg_id: str, stream_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        """按消息 ID 提取图片并调用百度动物识别。"""
+    async def _recognize_message_image(
+        self,
+        msg_id: str,
+        stream_id: str,
+        endpoint: str,
+        service_name: str,
+        *,
+        include_top_num: bool = False,
+        include_dish_filter_threshold: bool = False,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """按消息 ID 提取图片并调用百度图像识别。"""
 
         normalized_msg_id = msg_id.strip()
         normalized_stream_id = stream_id.strip()
@@ -581,8 +622,20 @@ class BirdwatchingPlugin(MaiBotPlugin):
         if image_error is not None or not image_base64:
             raise RuntimeError(image_error or "无法读取目标消息中的图片。")
 
-        payload = await self._recognize_animal_image(image_base64)
+        payload = await self._recognize_baidu_image(
+            image_base64,
+            endpoint,
+            service_name,
+            include_top_num=include_top_num,
+            include_dish_filter_threshold=include_dish_filter_threshold,
+        )
         return payload, self._serialize_results(payload)
+
+    def _ensure_tool_enabled(self, tool_name: str, display_name: str) -> None:
+        """检查工具开关。"""
+
+        if not getattr(self.config.tools, tool_name):
+            raise RuntimeError(f"{display_name}工具当前未启用，请在插件配置的 [tools] 中打开 {tool_name}。")
 
     @Tool(
         "recognize_animal",
@@ -601,7 +654,14 @@ class BirdwatchingPlugin(MaiBotPlugin):
 
         del kwargs
         try:
-            payload, results = await self._recognize_message_image(msg_id, stream_id)
+            self._ensure_tool_enabled("recognize_animal", "动物识别")
+            payload, results = await self._recognize_message_image(
+                msg_id,
+                stream_id,
+                BAIDU_ANIMAL_ENDPOINT,
+                "动物识别",
+                include_top_num=True,
+            )
             return {
                 "success": True,
                 "content": self._format_results(results, "动物识别结果："),
@@ -634,7 +694,14 @@ class BirdwatchingPlugin(MaiBotPlugin):
 
         del kwargs
         try:
-            payload, results = await self._recognize_message_image(msg_id, stream_id)
+            self._ensure_tool_enabled("recognize_bird", "鸟类识别")
+            payload, results = await self._recognize_message_image(
+                msg_id,
+                stream_id,
+                BAIDU_ANIMAL_ENDPOINT,
+                "动物识别",
+                include_top_num=True,
+            )
             bird_results = [item for item in results if _is_bird_name(str(item.get("name") or ""))]
             if bird_results:
                 content = self._format_results(bird_results, "鸟类识别结果：")
@@ -654,6 +721,86 @@ class BirdwatchingPlugin(MaiBotPlugin):
             return {
                 "success": False,
                 "content": f"鸟类识别失败：{exc}",
+                "target_message_id": msg_id.strip(),
+            }
+
+    @Tool(
+        "recognize_plant",
+        description="查询某条消息中的图片是什么植物；当用户询问图片里的花、草、树、植物名称或植物品种时使用。",
+        parameters=[
+            _tool_param("msg_id", ToolParamType.STRING, "要识别的图片消息 ID", True),
+        ],
+    )
+    async def handle_recognize_plant(
+        self,
+        msg_id: str = "",
+        stream_id: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """识别某条消息中的植物。"""
+
+        del kwargs
+        try:
+            self._ensure_tool_enabled("recognize_plant", "植物识别")
+            payload, results = await self._recognize_message_image(
+                msg_id,
+                stream_id,
+                BAIDU_PLANT_ENDPOINT,
+                "植物识别",
+            )
+            return {
+                "success": True,
+                "content": self._format_results(results, "植物识别结果："),
+                "results": results,
+                "raw_response": payload,
+                "target_message_id": msg_id.strip(),
+            }
+        except Exception as exc:
+            logger.info("recognize_plant 调用失败：msg_id=%s error=%s", msg_id, exc, exc_info=True)
+            return {
+                "success": False,
+                "content": f"植物识别失败：{exc}",
+                "target_message_id": msg_id.strip(),
+            }
+
+    @Tool(
+        "recognize_dish",
+        description="查询某条消息中的图片是什么菜品；默认未启用，只有配置打开后才用于识别食物、菜名、餐食和热量。",
+        parameters=[
+            _tool_param("msg_id", ToolParamType.STRING, "要识别的图片消息 ID", True),
+        ],
+    )
+    async def handle_recognize_dish(
+        self,
+        msg_id: str = "",
+        stream_id: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """识别某条消息中的菜品。"""
+
+        del kwargs
+        try:
+            self._ensure_tool_enabled("recognize_dish", "菜品识别")
+            payload, results = await self._recognize_message_image(
+                msg_id,
+                stream_id,
+                BAIDU_DISH_ENDPOINT,
+                "菜品识别",
+                include_top_num=True,
+                include_dish_filter_threshold=True,
+            )
+            return {
+                "success": True,
+                "content": self._format_results(results, "菜品识别结果："),
+                "results": results,
+                "raw_response": payload,
+                "target_message_id": msg_id.strip(),
+            }
+        except Exception as exc:
+            logger.info("recognize_dish 调用失败：msg_id=%s error=%s", msg_id, exc, exc_info=True)
+            return {
+                "success": False,
+                "content": f"菜品识别失败：{exc}",
                 "target_message_id": msg_id.strip(),
             }
 

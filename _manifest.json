@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "麦麦观鸟插件 (MaiMai Birdwatching Plugin)",
-  "description": "提供基于百度智能云动物识别接口的观鸟与动物识别工具。",
+  "description": "提供基于百度智能云图像识别接口的鸟类、动物、植物和菜品识别工具。",
   "author": {
     "name": "SengokuCola",
     "url": "https://github.com/SengokuCola"
