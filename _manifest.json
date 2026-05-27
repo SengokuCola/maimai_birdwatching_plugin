@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "version": "1.1.1",
   "name": "麦麦观鸟插件 (MaiMai Birdwatching Plugin)",
-  "description": "提供基于百度智能云图像识别接口的鸟类、动物、植物和菜品识别工具。",
+  "description": "提供基于百度智能云图像识别接口的鸟类、动物、植物和菜品识别工具，并支持可选 HHo 懂鸟鸟类识别。",
   "author": {
     "name": "SengokuCola",
     "url": "https://github.com/SengokuCola"
@@ -22,9 +22,16 @@
     "min_version": "2.0.0",
     "max_version": "2.99.99"
   },
-  "dependencies": [],
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "Pillow",
+      "version_spec": ">=11.3.0"
+    }
+  ],
   "capabilities": [
-    "message.get_by_id"
+    "message.get_by_id",
+    "send.image"
   ],
   "i18n": {
     "default_locale": "zh-CN",
